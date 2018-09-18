@@ -36,7 +36,11 @@
 static inline struct spdk_nvme_ns_data *
 _nvme_ns_get_data(struct spdk_nvme_ns *ns)
 {
-	return &ns->ctrlr->nsdata[ns->id - 1];
+	// nvme-cli can call this before the ns exists
+	if ( ns->ctrlr != 0 )
+		return &ns->ctrlr->nsdata[ns->id - 1];
+	else
+		return 0;
 }
 
 static
@@ -149,7 +153,10 @@ spdk_nvme_ns_is_active(struct spdk_nvme_ns *ns)
 	 *  inactive namespace IDs.
 	 * Check NCAP since it must be nonzero for an active namespace.
 	 */
-	return nsdata->ncap != 0;
+	if (nsdata == 0)
+		return 0;
+	else
+		return nsdata->ncap != 0;
 }
 
 struct spdk_nvme_ctrlr *
