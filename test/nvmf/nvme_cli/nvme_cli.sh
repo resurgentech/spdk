@@ -32,14 +32,13 @@ fi
 
 timing_enter nvme_cli
 timing_enter start_nvmf_tgt
-$NVMF_APP -m 0xF --wait-for-rpc &
+$NVMF_APP -m 0xF &
 nvmfpid=$!
 
 trap "process_shm --id $NVMF_APP_SHM_ID; killprocess $nvmfpid; nvmftestfini $1; exit 1" SIGINT SIGTERM EXIT
 
 waitforlisten $nvmfpid
-$rpc_py set_nvmf_target_options -u 8192 -p 4
-$rpc_py start_subsystem_init
+$rpc_py nvmf_create_transport -t RDMA -u 8192 -p 4
 timing_exit start_nvmf_tgt
 
 bdevs="$($rpc_py construct_malloc_bdev $MALLOC_BDEV_SIZE $MALLOC_BLOCK_SIZE) "
@@ -47,8 +46,11 @@ bdevs+="$($rpc_py construct_malloc_bdev $MALLOC_BDEV_SIZE $MALLOC_BLOCK_SIZE)"
 
 modprobe -v nvme-rdma
 
-$rpc_py construct_nvmf_subsystem nqn.2016-06.io.spdk:cnode1 '' '' -a -s SPDK00000000000001 -n "$bdevs"
-$rpc_py nvmf_subsystem_add_listener nqn.2016-06.io.spdk:cnode1 -t RDMA -a $NVMF_FIRST_TARGET_IP -s "$NVMF_PORT"
+$rpc_py nvmf_subsystem_create nqn.2016-06.io.spdk:cnode1 -a -s SPDK00000000000001
+for bdev in $bdevs; do
+	$rpc_py nvmf_subsystem_add_ns nqn.2016-06.io.spdk:cnode1 $bdev
+done
+$rpc_py nvmf_subsystem_add_listener nqn.2016-06.io.spdk:cnode1 -t rdma -a $NVMF_FIRST_TARGET_IP -s $NVMF_PORT
 
 nvme connect -t rdma -n "nqn.2016-06.io.spdk:cnode1" -a "$NVMF_FIRST_TARGET_IP" -s "$NVMF_PORT"
 

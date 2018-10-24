@@ -80,13 +80,8 @@ config_params='--enable-debug --enable-werror'
 
 if echo -e "#include <libunwind.h>\nint main(int argc, char *argv[]) {return 0;}\n" | \
 	gcc -o /dev/null -lunwind -x c - 2>/dev/null; then
-	config_params+=' --enable-log-bt=ERROR'
+	config_params+=' --enable-log-bt'
 fi
-
-# RAID is marked experimental and not built by default currently, since it does not
-#  support iov (meaning vhost will not work).  But enable it in the build here, to make
-#  sure it gets built and run against a limited set of use cases for now.
-config_params+=' --with-raid'
 
 if [ $SPDK_TEST_CRYPTO -eq 1 ]; then
 	config_params+=' --with-crypto'
@@ -563,7 +558,7 @@ function discover_bdevs()
 
 	# Start the bdev service to query for the list of available
 	# bdevs.
-	$rootdir/test/app/bdev_svc/bdev_svc -r $rpc_server -i 0 -s 1024 -g \
+	$rootdir/test/app/bdev_svc/bdev_svc -r $rpc_server -i 0 -s 1024 \
 		-c $config_file &>/dev/null &
 	stubpid=$!
 	while ! [ -e /var/run/spdk_bdev0 ]; do
@@ -683,14 +678,27 @@ function autotest_cleanup()
 {
 	$rootdir/scripts/setup.sh reset
 	$rootdir/scripts/setup.sh cleanup
+	if [ $(uname -s) = "Linux" ]; then
+		if grep -q '#define SPDK_CONFIG_IGB_UIO_DRIVER 1' $rootdir/include/spdk/config.h; then
+			rmmod igb_uio
+		else
+			modprobe -r uio_pci_generic
+		fi
+	fi
 }
 
 function freebsd_update_contigmem_mod()
 {
 	if [ `uname` = FreeBSD ]; then
 		kldunload contigmem.ko || true
-		cp -f $rootdir/dpdk/build/kmod/contigmem.ko /boot/modules/
-		cp -f $rootdir/dpdk/build/kmod/contigmem.ko /boot/kernel/
+		if [ ! -z "$WITH_DPDK_DIR" ]; then
+			echo "Warning: SPDK only works on FreeBSD with patches that only exist in SPDK's dpdk submodule"
+			cp -f "$WITH_DPDK_DIR/kmod/contigmem.ko" /boot/modules/
+			cp -f "$WITH_DPDK_DIR/kmod/contigmem.ko" /boot/kernel/
+		else
+			cp -f "$rootdir/dpdk/build/kmod/contigmem.ko" /boot/modules/
+			cp -f "$rootdir/dpdk/build/kmod/contigmem.ko" /boot/kernel/
+		fi
 	fi
 }
 

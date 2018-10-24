@@ -15,19 +15,19 @@ def set_bdev_options(client, bdev_io_pool_size=None, bdev_io_cache_size=None):
     return client.call('set_bdev_options', params)
 
 
-def construct_crypto_bdev(client, base_bdev_name, crypto_bdev_name, crypto_pmd, key):
+def construct_crypto_bdev(client, base_bdev_name, name, crypto_pmd, key):
     """Construct a crypto virtual block device.
 
     Args:
         base_bdev_name: name of the underlying base bdev
-        crypto_bdev_name: name for the crypto vbdev
+        name: name for the crypto vbdev
         crypto_pmd: name of of the DPDK crypto driver to use
         key: key
 
     Returns:
         Name of created virtual block device.
     """
-    params = {'base_bdev_name': base_bdev_name, 'crypto_bdev_name': crypto_bdev_name, 'crypto_pmd': crypto_pmd, 'key': key}
+    params = {'base_bdev_name': base_bdev_name, 'name': name, 'crypto_pmd': crypto_pmd, 'key': key}
 
     return client.call('construct_crypto_bdev', params)
 
@@ -36,7 +36,7 @@ def delete_crypto_bdev(client, name):
     """Delete crypto virtual block device.
 
     Args:
-        bdev_name: name of crypto vbdev to delete
+        name: name of crypto vbdev to delete
     """
     params = {'name': name}
     return client.call('delete_crypto_bdev', params)
@@ -500,17 +500,21 @@ def set_bdev_qd_sampling_period(client, name, period):
     return client.call('set_bdev_qd_sampling_period', params)
 
 
-def set_bdev_qos_limit_iops(client, name, ios_per_sec):
-    """Set QoS IOPS limit on a block device.
+def set_bdev_qos_limit(client, name, rw_ios_per_sec=None, rw_mbytes_per_sec=None):
+    """Set QoS rate limit on a block device.
 
     Args:
         name: name of block device
-        ios_per_sec: IOs per second limit (>=10000, example: 20000). 0 means unlimited.
+        rw_ios_per_sec: R/W IOs per second limit (>=10000, example: 20000). 0 means unlimited.
+        rw_mbytes_per_sec: R/W megabytes per second limit (>=10, example: 100). 0 means unlimited.
     """
     params = {}
     params['name'] = name
-    params['ios_per_sec'] = ios_per_sec
-    return client.call('set_bdev_qos_limit_iops', params)
+    if rw_ios_per_sec is not None:
+        params['rw_ios_per_sec'] = rw_ios_per_sec
+    if rw_mbytes_per_sec is not None:
+        params['rw_mbytes_per_sec'] = rw_mbytes_per_sec
+    return client.call('set_bdev_qos_limit', params)
 
 
 def apply_firmware(client, bdev_name, filename):

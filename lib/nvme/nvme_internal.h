@@ -34,6 +34,7 @@
 #ifndef __NVME_INTERNAL_H__
 #define __NVME_INTERNAL_H__
 
+#include "spdk/config.h"
 #include "spdk/likely.h"
 #include "spdk/stdinc.h"
 
@@ -388,6 +389,11 @@ struct spdk_nvme_ns {
  */
 enum nvme_ctrlr_state {
 	/**
+	 * Wait before initializing the controller.
+	 */
+	NVME_CTRLR_STATE_INIT_DELAY,
+
+	/**
 	 * Controller has not been initialized yet.
 	 */
 	NVME_CTRLR_STATE_INIT,
@@ -448,9 +454,35 @@ enum nvme_ctrlr_state {
 	NVME_CTRLR_STATE_WAIT_FOR_GET_NUM_QUEUES,
 
 	/**
-	 * Construct Namespaces of the controller.
+	 * Construct Namespace data structures of the controller.
 	 */
 	NVME_CTRLR_STATE_CONSTRUCT_NS,
+
+	/**
+	 * Get active Namespace list of the controller.
+	 */
+	NVME_CTRLR_STATE_IDENTIFY_ACTIVE_NS,
+
+	/**
+	 * Get Identify Namespace Data structure for each NS.
+	 */
+	NVME_CTRLR_STATE_IDENTIFY_NS,
+
+	/**
+	 * Waiting for the Identify Namespace commands to be completed.
+	 */
+	NVME_CTRLR_STATE_WAIT_FOR_IDENTIFY_NS,
+
+	/**
+	 * Get Identify Namespace Identification Descriptors.
+	 */
+	NVME_CTRLR_STATE_IDENTIFY_ID_DESCS,
+
+	/**
+	 * Waiting for the Identify Namespace Identification
+	 * Descriptors to be completed.
+	 */
+	NVME_CTRLR_STATE_WAIT_FOR_IDENTIFY_ID_DESCS,
 
 	/**
 	 * Configure AER of the controller.
@@ -786,6 +818,7 @@ int	nvme_qpair_submit_request(struct spdk_nvme_qpair *qpair,
 				  struct nvme_request *req);
 
 int	nvme_ctrlr_identify_active_ns(struct spdk_nvme_ctrlr *ctrlr);
+void	nvme_ns_set_identify_data(struct spdk_nvme_ns *ns);
 int	nvme_ns_construct(struct spdk_nvme_ns *ns, uint32_t id,
 			  struct spdk_nvme_ctrlr *ctrlr);
 void	nvme_ns_destruct(struct spdk_nvme_ns *ns);

@@ -146,7 +146,8 @@ spdk_bdev_part_io_type_supported(void *_part, enum spdk_bdev_io_type io_type)
 {
 	struct spdk_bdev_part *part = _part;
 
-	return part->internal.base->bdev->fn_table->io_type_supported(part->internal.base->bdev, io_type);
+	return part->internal.base->bdev->fn_table->io_type_supported(part->internal.base->bdev->ctxt,
+			io_type);
 }
 
 static struct spdk_io_channel *
@@ -191,7 +192,7 @@ spdk_bdev_part_complete_io(struct spdk_bdev_io *bdev_io, bool success, void *cb_
 	spdk_bdev_free_io(bdev_io);
 }
 
-void
+int
 spdk_bdev_part_submit_request(struct spdk_bdev_part_channel *ch, struct spdk_bdev_io *bdev_io)
 {
 	struct spdk_bdev_part *part = ch->part;
@@ -237,14 +238,12 @@ spdk_bdev_part_submit_request(struct spdk_bdev_part_channel *ch, struct spdk_bde
 		break;
 	default:
 		SPDK_ERRLOG("split: unknown I/O type %d\n", bdev_io->type);
-		spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_FAILED);
-		return;
+		return SPDK_BDEV_IO_STATUS_FAILED;
 	}
 
-	if (rc != 0) {
-		spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_FAILED);
-	}
+	return rc;
 }
+
 static int
 spdk_bdev_part_channel_create_cb(void *io_device, void *ctx_buf)
 {

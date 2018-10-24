@@ -311,6 +311,7 @@ spdk_nvmf_ctrlr_connect(struct spdk_nvmf_request *req)
 	struct spdk_nvmf_ctrlr *ctrlr;
 	struct spdk_nvmf_subsystem *subsystem;
 	const char *subnqn, *hostnqn;
+	struct spdk_nvme_transport_id listen_trid = {};
 	void *end;
 
 	if (req->length < sizeof(struct spdk_nvmf_fabric_connect_data)) {
@@ -369,6 +370,22 @@ spdk_nvmf_ctrlr_connect(struct spdk_nvmf_request *req)
 
 	if (!spdk_nvmf_subsystem_host_allowed(subsystem, hostnqn)) {
 		SPDK_ERRLOG("Subsystem '%s' does not allow host '%s'\n", subnqn, hostnqn);
+		rsp->status.sct = SPDK_NVME_SCT_COMMAND_SPECIFIC;
+		rsp->status.sc = SPDK_NVMF_FABRIC_SC_INVALID_HOST;
+		return SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE;
+	}
+
+	if (spdk_nvmf_qpair_get_listen_trid(qpair, &listen_trid)) {
+		SPDK_ERRLOG("Subsystem '%s' is unable to enforce access control due to an internal error.\n",
+			    subnqn);
+		rsp->status.sct = SPDK_NVME_SCT_COMMAND_SPECIFIC;
+		rsp->status.sc = SPDK_NVMF_FABRIC_SC_INVALID_HOST;
+		return SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE;
+	}
+
+	if (!spdk_nvmf_subsystem_listener_allowed(subsystem, &listen_trid)) {
+		SPDK_ERRLOG("Subsystem '%s' does not allow host '%s' to connect at this address.\n", subnqn,
+			    hostnqn);
 		rsp->status.sct = SPDK_NVME_SCT_COMMAND_SPECIFIC;
 		rsp->status.sc = SPDK_NVMF_FABRIC_SC_INVALID_HOST;
 		return SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE;
@@ -779,6 +796,8 @@ spdk_nvmf_ctrlr_set_features_volatile_write_cache(struct spdk_nvmf_request *req)
 	ctrlr->feat.volatile_write_cache.raw = cmd->cdw11;
 	ctrlr->feat.volatile_write_cache.bits.reserved = 0;
 
+	SPDK_DEBUGLOG(SPDK_LOG_NVMF, "Set Features - Volatile Write Cache %s\n",
+		      ctrlr->feat.volatile_write_cache.bits.wce ? "Enabled" : "Disabled");
 	return SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE;
 }
 
@@ -1119,12 +1138,14 @@ invalid_log_page:
 }
 
 static int
-spdk_nvmf_ctrlr_identify_ns(struct spdk_nvmf_subsystem *subsystem,
+spdk_nvmf_ctrlr_identify_ns(struct spdk_nvmf_ctrlr *ctrlr,
 			    struct spdk_nvme_cmd *cmd,
 			    struct spdk_nvme_cpl *rsp,
 			    struct spdk_nvme_ns_data *nsdata)
 {
+	struct spdk_nvmf_subsystem *subsystem = ctrlr->subsys;
 	struct spdk_nvmf_ns *ns;
+	uint32_t max_num_blocks;
 
 	if (cmd->nsid == 0 || cmd->nsid > subsystem->max_nsid) {
 		SPDK_ERRLOG("Identify Namespace for invalid NSID %u\n", cmd->nsid);
@@ -1146,7 +1167,16 @@ spdk_nvmf_ctrlr_identify_ns(struct spdk_nvmf_subsystem *subsystem,
 		return SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE;
 	}
 
-	return spdk_nvmf_bdev_ctrlr_identify_ns(ns, nsdata);
+	spdk_nvmf_bdev_ctrlr_identify_ns(ns, nsdata);
+
+	/* Due to bug in the Linux kernel NVMe driver we have to set noiob no larger than mdts */
+	max_num_blocks = ctrlr->admin_qpair->transport->opts.max_io_size /
+			 (1U << nsdata->lbaf[nsdata->flbas.format].lbads);
+	if (nsdata->noiob > max_num_blocks) {
+		nsdata->noiob = max_num_blocks;
+	}
+
+	return SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE;
 }
 
 static int
@@ -1351,7 +1381,7 @@ spdk_nvmf_ctrlr_identify(struct spdk_nvmf_request *req)
 
 	switch (cns) {
 	case SPDK_NVME_IDENTIFY_NS:
-		return spdk_nvmf_ctrlr_identify_ns(subsystem, cmd, rsp, req->data);
+		return spdk_nvmf_ctrlr_identify_ns(ctrlr, cmd, rsp, req->data);
 	case SPDK_NVME_IDENTIFY_CTRLR:
 		return spdk_nvmf_ctrlr_identify_ctrlr(ctrlr, req->data);
 	case SPDK_NVME_IDENTIFY_ACTIVE_NS_LIST:

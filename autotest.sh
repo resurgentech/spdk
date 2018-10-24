@@ -79,6 +79,14 @@ timing_enter nvmf_setup
 rdma_device_init
 timing_exit nvmf_setup
 
+if [ $SPDK_TEST_CRYPTO -eq 1 ]; then
+	if grep -q '#define SPDK_CONFIG_IGB_UIO_DRIVER 1' $rootdir/include/spdk/config.h; then
+		./scripts/qat_setup.sh igb_uio
+	else
+		./scripts/qat_setup.sh
+	fi
+fi
+
 #####################
 # Unit Tests
 #####################
@@ -124,6 +132,7 @@ if [ $SPDK_TEST_NVME -eq 1 ]; then
 fi
 
 run_test suite test/env/env.sh
+run_test suite test/rpc_client/rpc_client.sh
 
 if [ $SPDK_TEST_IOAT -eq 1 ]; then
 	run_test suite test/ioat/ioat.sh
@@ -134,6 +143,7 @@ timing_exit lib
 if [ $SPDK_TEST_ISCSI -eq 1 ]; then
 	run_test suite ./test/iscsi_tgt/iscsi_tgt.sh posix
 	run_test suite ./test/iscsi_tgt/iscsijson/json_config.sh
+	run_test suite ./test/spdkcli/iscsi.sh
 fi
 
 if [ $SPDK_TEST_BLOBFS -eq 1 ]; then
@@ -144,6 +154,7 @@ fi
 if [ $SPDK_TEST_NVMF -eq 1 ]; then
 	run_test suite ./test/nvmf/nvmf.sh
 	run_test suite ./test/nvmf/nvmfjson/json_config.sh
+	run_test suite ./test/spdkcli/nvmf.sh
 fi
 
 if [ $SPDK_TEST_VHOST -eq 1 ]; then
@@ -155,6 +166,10 @@ if [ $SPDK_TEST_VHOST -eq 1 ]; then
 	timing_enter vhost_json_config
 	run_test suite ./test/vhost/json_config/json_config.sh
 	timing_exit vhost_json_config
+
+	timing_enter vhost_boot
+	run_test suite ./test/vhost/spdk_vhost.sh --boot
+	timing_exit vhost_boot
 
 	if [ $RUN_NIGHTLY -eq 1 ]; then
 		timing_enter integrity_blk

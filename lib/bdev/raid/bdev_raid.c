@@ -696,13 +696,52 @@ raid_bdev_dump_info_json(void *ctx, struct spdk_json_write_ctx *w)
 	return 0;
 }
 
+/*
+ * brief:
+ * raid_bdev_write_config_json is the function table pointer for raid bdev
+ * params:
+ * bdev - pointer to spdk_bdev
+ * w - pointer to json context
+ * returns:
+ * none
+ */
+static void
+raid_bdev_write_config_json(struct spdk_bdev *bdev, struct spdk_json_write_ctx *w)
+{
+	struct raid_bdev *raid_bdev = bdev->ctxt;
+	struct spdk_bdev *base;
+	uint16_t i;
+
+	spdk_json_write_object_begin(w);
+
+	spdk_json_write_named_string(w, "method", "construct_raid_bdev");
+
+	spdk_json_write_named_object_begin(w, "params");
+	spdk_json_write_named_string(w, "name", bdev->name);
+	spdk_json_write_named_uint32(w, "strip_size", raid_bdev->strip_size);
+	spdk_json_write_named_uint32(w, "raid_level", raid_bdev->raid_level);
+
+	spdk_json_write_named_array_begin(w, "base_bdevs");
+	for (i = 0; i < raid_bdev->num_base_bdevs; i++) {
+		base = raid_bdev->base_bdev_info[i].bdev;
+		if (base) {
+			spdk_json_write_string(w, base->name);
+		}
+	}
+	spdk_json_write_array_end(w);
+	spdk_json_write_object_end(w);
+
+	spdk_json_write_object_end(w);
+}
+
 /* g_raid_bdev_fn_table is the function table for raid bdev */
 static const struct spdk_bdev_fn_table g_raid_bdev_fn_table = {
-	.destruct           = raid_bdev_destruct,
-	.submit_request     = raid_bdev_submit_request,
-	.io_type_supported  = raid_bdev_io_type_supported,
-	.get_io_channel     = raid_bdev_get_io_channel,
-	.dump_info_json     = raid_bdev_dump_info_json,
+	.destruct		= raid_bdev_destruct,
+	.submit_request		= raid_bdev_submit_request,
+	.io_type_supported	= raid_bdev_io_type_supported,
+	.get_io_channel		= raid_bdev_get_io_channel,
+	.dump_info_json		= raid_bdev_dump_info_json,
+	.write_config_json	= raid_bdev_write_config_json,
 };
 
 /*
@@ -1060,6 +1099,49 @@ raid_bdev_get_ctx_size(void)
 
 /*
  * brief:
+ * raid_bdev_get_running_config is used to get the configuration options.
+ *
+ * params:
+ * fp - The pointer to a file that will be written to the configuration options.
+ * returns:
+ * none
+ */
+static void
+raid_bdev_get_running_config(FILE *fp)
+{
+	struct raid_bdev *raid_bdev;
+	struct spdk_bdev *base;
+	int index = 1;
+	uint16_t i;
+
+	TAILQ_FOREACH(raid_bdev, &g_spdk_raid_bdev_configured_list, state_link) {
+		fprintf(fp,
+			"\n"
+			"[RAID%d]\n"
+			"  Name %s\n"
+			"  StripSize %" PRIu32 "\n"
+			"  NumDevices %hu\n"
+			"  RaidLevel %hhu\n",
+			index, raid_bdev->bdev.name, raid_bdev->strip_size,
+			raid_bdev->num_base_bdevs, raid_bdev->raid_level);
+		fprintf(fp,
+			"  Devices ");
+		for (i = 0; i < raid_bdev->num_base_bdevs; i++) {
+			base = raid_bdev->base_bdev_info[i].bdev;
+			if (base) {
+				fprintf(fp,
+					"%s ",
+					base->name);
+			}
+		}
+		fprintf(fp,
+			"\n");
+		index++;
+	}
+}
+
+/*
+ * brief:
  * raid_bdev_can_claim_bdev is the function to check if this base_bdev can be
  * claimed by raid bdev or not.
  * params:
@@ -1104,7 +1186,7 @@ static struct spdk_bdev_module g_raid_if = {
 	.module_fini = raid_bdev_exit,
 	.get_ctx_size = raid_bdev_get_ctx_size,
 	.examine_config = raid_bdev_examine,
-	.config_text = NULL,
+	.config_text = raid_bdev_get_running_config,
 	.async_init = false,
 	.async_fini = false,
 };
@@ -1278,8 +1360,7 @@ raid_bdev_configure(struct raid_bdev *raid_bdev)
 			 * have same blocklen
 			 */
 			SPDK_ERRLOG("Blocklen of various bdevs not matching\n");
-			rc = -EINVAL;
-			goto offline;
+			return -EINVAL;
 		}
 	}
 
@@ -1321,13 +1402,10 @@ raid_bdev_configure(struct raid_bdev *raid_bdev)
 					raid_bdev->bdev.name);
 		rc = spdk_bdev_register(raid_bdev_gen);
 		if (rc != 0) {
-			/*
-			 * If failed to register raid bdev to bdev layer, make raid bdev offline
-			 * and add to offline list
-			 */
-			SPDK_ERRLOG("Unable to register pooled bdev\n");
+			SPDK_ERRLOG("Unable to register pooled bdev and stay at configuring state\n");
 			spdk_io_device_unregister(raid_bdev, NULL);
-			goto offline;
+			raid_bdev->state = RAID_BDEV_STATE_CONFIGURING;
+			return rc;
 		}
 		SPDK_DEBUGLOG(SPDK_LOG_BDEV_RAID, "raid bdev generic %p\n", raid_bdev_gen);
 		TAILQ_REMOVE(&g_spdk_raid_bdev_configuring_list, raid_bdev, state_link);
@@ -1337,12 +1415,6 @@ raid_bdev_configure(struct raid_bdev *raid_bdev)
 	}
 
 	return 0;
-
-offline:
-	raid_bdev->state = RAID_BDEV_STATE_OFFLINE;
-	TAILQ_REMOVE(&g_spdk_raid_bdev_configuring_list, raid_bdev, state_link);
-	TAILQ_INSERT_TAIL(&g_spdk_raid_bdev_offline_list, raid_bdev, state_link);
-	return rc;
 }
 
 /*
@@ -1416,8 +1488,13 @@ raid_bdev_remove_base_bdev(void *ctx)
 	assert(raid_bdev->base_bdev_info[i].desc);
 	raid_bdev->base_bdev_info[i].remove_scheduled = true;
 
-	if (raid_bdev->destruct_called == true && raid_bdev->base_bdev_info[i].bdev != NULL) {
-		/* As raid bdev is already unregistered, so cleanup should be done here itself */
+	if ((raid_bdev->destruct_called == true ||
+	     raid_bdev->state == RAID_BDEV_STATE_CONFIGURING) &&
+	    raid_bdev->base_bdev_info[i].bdev != NULL) {
+		/*
+		 * As raid bdev is not registered yet or already unregistered, so cleanup
+		 * should be done here itself
+		 */
 		raid_bdev_free_base_bdev_resource(raid_bdev, i);
 		if (raid_bdev->num_base_bdevs_discovered == 0) {
 			/* Since there is no base bdev for this raid, so free the raid device */
@@ -1505,9 +1582,9 @@ raid_bdev_add_base_devices(struct raid_bdev_config *raid_cfg)
 
 		_rc = raid_bdev_add_base_device(raid_cfg, base_bdev, i);
 		if (_rc != 0) {
-			SPDK_ERRLOG("Failed to add base bdev %s to RAID bdev %s: %s",
+			SPDK_ERRLOG("Failed to add base bdev %s to RAID bdev %s: %s\n",
 				    raid_cfg->base_bdev[i].name, raid_cfg->name,
-				    spdk_strerror(-rc));
+				    spdk_strerror(-_rc));
 			if (rc == 0) {
 				rc = _rc;
 			}

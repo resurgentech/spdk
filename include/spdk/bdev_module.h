@@ -395,6 +395,9 @@ struct spdk_bdev_io {
 
 			/** current offset of the split I/O in the bdev */
 			uint64_t split_current_offset_blocks;
+
+			/** count of outstanding batched split I/Os */
+			uint32_t split_outstanding;
 		} bdev;
 		struct {
 			/** Channel reference held while messages for this reset are in progress. */
@@ -904,8 +907,9 @@ int spdk_bdev_part_construct(struct spdk_bdev_part *part, struct spdk_bdev_part_
  *
  * \param ch The I/O channel associated with the spdk_bdev_part.
  * \param bdev_io The I/O to be submitted to the underlying bdev.
+ * \return 0 on success or non-zero if submit request failed.
  */
-void spdk_bdev_part_submit_request(struct spdk_bdev_part_channel *ch, struct spdk_bdev_io *bdev_io);
+int spdk_bdev_part_submit_request(struct spdk_bdev_part_channel *ch, struct spdk_bdev_io *bdev_io);
 
 /**
  * Return a pointer to this part's spdk_bdev.

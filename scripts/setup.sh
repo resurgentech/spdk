@@ -251,7 +251,7 @@ function cleanup_linux {
 	done
 	shopt -u extglob nullglob
 
-	files_to_clean+="$(echo /dev/shm/* | egrep '(spdk_tgt|iscsi|vhost|nvmf|rocksdb|bdevtest)_trace|spdk_iscsi_conns' || true) "
+	files_to_clean+="$(echo /dev/shm/* | egrep '(spdk_tgt|iscsi|vhost|nvmf|rocksdb|bdevtest|bdevperf)_trace|spdk_iscsi_conns' || true) "
 	files_to_clean="$(readlink -e assert_not_empty $files_to_clean || true)"
 	if [[ -z "$files_to_clean" ]]; then
 		echo "Clean"
@@ -592,6 +592,10 @@ else
 		configure_freebsd
 	elif [ "$mode" == "reset" ]; then
 		reset_freebsd
+	elif [ "$mode" == "cleanup" ]; then
+		echo "setup.sh cleanup function not yet supported on $(uname)"
+	elif [ "$mode" == "status" ]; then
+		echo "setup.sh status function not yet supported on $(uname)"
 	elif [ "$mode" == "help" ]; then
 		usage $0
 	else

@@ -297,9 +297,8 @@ spdk_iscsi_conn_construct(struct spdk_iscsi_portal *portal,
 	TAILQ_INIT(&conn->queued_datain_tasks);
 	memset(&conn->open_lun_descs, 0, sizeof(conn->open_lun_descs));
 
-	rc = spdk_sock_getaddr(sock, conn->target_addr,
-			       sizeof conn->target_addr,
-			       conn->initiator_addr, sizeof conn->initiator_addr);
+	rc = spdk_sock_getaddr(sock, conn->target_addr, sizeof conn->target_addr, NULL,
+			       conn->initiator_addr, sizeof conn->initiator_addr, NULL);
 	if (rc < 0) {
 		SPDK_ERRLOG("spdk_sock_getaddr() failed\n");
 		goto error_return;
@@ -475,15 +474,18 @@ static void
 spdk_iscsi_conn_cleanup_backend(struct spdk_iscsi_conn *conn)
 {
 	int rc;
+	struct spdk_iscsi_tgt_node *target;
 
 	if (conn->sess->connections > 1) {
 		/* connection specific cleanup */
 	} else if (!g_spdk_iscsi.AllowDuplicateIsid) {
 		/* clean up all tasks to all LUNs for session */
-		rc = spdk_iscsi_tgt_node_cleanup_luns(conn,
-						      conn->sess->target);
-		if (rc < 0) {
-			SPDK_ERRLOG("target abort failed\n");
+		target = conn->sess->target;
+		if (target != NULL) {
+			rc = spdk_iscsi_tgt_node_cleanup_luns(conn, target);
+			if (rc < 0) {
+				SPDK_ERRLOG("target abort failed\n");
+			}
 		}
 	}
 }
@@ -515,20 +517,10 @@ _spdk_iscsi_conn_check_shutdown(void *arg)
 	return -1;
 }
 
-void
-spdk_iscsi_conn_destruct(struct spdk_iscsi_conn *conn)
+static void
+_spdk_iscsi_conn_destruct(struct spdk_iscsi_conn *conn)
 {
-	struct spdk_iscsi_tgt_node	*target;
-	int				rc;
-
-	conn->state = ISCSI_CONN_STATE_EXITED;
-
-	if (conn->sess != NULL && conn->pending_task_cnt > 0) {
-		target = conn->sess->target;
-		if (target != NULL) {
-			spdk_iscsi_conn_cleanup_backend(conn);
-		}
-	}
+	int rc;
 
 	spdk_clear_all_transfer_task(conn, NULL);
 	spdk_iscsi_poll_group_remove_conn_sock(conn);
@@ -543,6 +535,38 @@ spdk_iscsi_conn_destruct(struct spdk_iscsi_conn *conn)
 	} else {
 		spdk_iscsi_conn_stop(conn);
 		_spdk_iscsi_conn_free(conn);
+	}
+}
+
+static int
+_spdk_iscsi_conn_check_pending_tasks(void *arg)
+{
+	struct spdk_iscsi_conn *conn = arg;
+
+	if (conn->dev != NULL && spdk_scsi_dev_has_pending_tasks(conn->dev)) {
+		return -1;
+	}
+
+	spdk_poller_unregister(&conn->shutdown_timer);
+
+	_spdk_iscsi_conn_destruct(conn);
+
+	return -1;
+}
+
+void
+spdk_iscsi_conn_destruct(struct spdk_iscsi_conn *conn)
+{
+	conn->state = ISCSI_CONN_STATE_EXITED;
+
+	if (conn->sess != NULL && conn->pending_task_cnt > 0) {
+		spdk_iscsi_conn_cleanup_backend(conn);
+	}
+
+	if (conn->dev != NULL && spdk_scsi_dev_has_pending_tasks(conn->dev)) {
+		conn->shutdown_timer = spdk_poller_register(_spdk_iscsi_conn_check_pending_tasks, conn, 1000);
+	} else {
+		_spdk_iscsi_conn_destruct(conn);
 	}
 }
 
@@ -624,14 +648,54 @@ spdk_iscsi_conn_close_luns(struct spdk_iscsi_conn *conn)
 }
 
 static void
+_iscsi_conn_remove_lun(void *arg1, void *arg2)
+{
+	struct spdk_iscsi_conn *conn = arg1;
+	struct spdk_scsi_lun *lun = arg2;
+	int lun_id = spdk_scsi_lun_get_id(lun);
+	struct spdk_iscsi_pdu *pdu, *tmp_pdu;
+	struct spdk_iscsi_task *iscsi_task, *tmp_iscsi_task;
+
+	/* If a connection is already in stating status, just return */
+	if (conn->state >= ISCSI_CONN_STATE_EXITING) {
+		return;
+	}
+
+	spdk_clear_all_transfer_task(conn, lun);
+	TAILQ_FOREACH_SAFE(pdu, &conn->write_pdu_list, tailq, tmp_pdu) {
+		if (pdu->task && (lun == pdu->task->scsi.lun)) {
+			TAILQ_REMOVE(&conn->write_pdu_list, pdu, tailq);
+			spdk_iscsi_conn_free_pdu(conn, pdu);
+		}
+	}
+
+	TAILQ_FOREACH_SAFE(pdu, &conn->snack_pdu_list, tailq, tmp_pdu) {
+		if (pdu->task && (lun == pdu->task->scsi.lun)) {
+			TAILQ_REMOVE(&conn->snack_pdu_list, pdu, tailq);
+			spdk_iscsi_task_put(pdu->task);
+			spdk_put_pdu(pdu);
+		}
+	}
+
+	TAILQ_FOREACH_SAFE(iscsi_task, &conn->queued_datain_tasks, link, tmp_iscsi_task) {
+		if ((!iscsi_task->is_queued) && (lun == iscsi_task->scsi.lun)) {
+			TAILQ_REMOVE(&conn->queued_datain_tasks, iscsi_task, link);
+			spdk_iscsi_task_put(iscsi_task);
+		}
+	}
+
+	spdk_iscsi_conn_close_lun(conn, lun_id);
+}
+
+static void
 spdk_iscsi_conn_remove_lun(struct spdk_scsi_lun *lun, void *remove_ctx)
 {
 	struct spdk_iscsi_conn *conn = remove_ctx;
-	int lun_id = spdk_scsi_lun_get_id(lun);
+	struct spdk_event *event;
 
-	spdk_clear_all_transfer_task(conn, lun);
-
-	spdk_iscsi_conn_close_lun(conn, lun_id);
+	event = spdk_event_allocate(conn->lcore, _iscsi_conn_remove_lun,
+				    conn, lun);
+	spdk_event_call(event);
 }
 
 static void
@@ -814,7 +878,7 @@ spdk_iscsi_conn_read_data(struct spdk_iscsi_conn *conn, int bytes,
 	ret = spdk_sock_recv(conn->sock, buf, bytes);
 
 	if (ret > 0) {
-		spdk_trace_record(TRACE_READ_FROM_SOCKET_DONE, conn->id, ret, 0, 0);
+		spdk_trace_record(TRACE_ISCSI_READ_FROM_SOCKET_DONE, conn->id, ret, 0, 0);
 		return ret;
 	}
 
@@ -908,6 +972,7 @@ spdk_iscsi_task_cpl(struct spdk_scsi_task *scsi_task)
 	struct spdk_iscsi_task *primary;
 	struct spdk_iscsi_task *task = spdk_iscsi_task_from_scsi_task(scsi_task);
 	struct spdk_iscsi_conn *conn = task->conn;
+	struct spdk_iscsi_pdu *pdu = task->pdu;
 
 	spdk_trace_record(TRACE_ISCSI_TASK_DONE, conn->id, 0, (uintptr_t)task, 0);
 
@@ -943,6 +1008,9 @@ spdk_iscsi_task_cpl(struct spdk_scsi_task *scsi_task)
 			}
 		}
 		spdk_iscsi_task_put(task);
+	}
+	if (!task->parent) {
+		spdk_trace_record(TRACE_ISCSI_PDU_COMPLETED, 0, 0, (uintptr_t)pdu, 0);
 	}
 }
 
@@ -1078,7 +1146,7 @@ spdk_iscsi_conn_flush_pdus_internal(struct spdk_iscsi_conn *conn)
 		}
 	}
 
-	spdk_trace_record(TRACE_FLUSH_WRITEBUF_START, conn->id, total_length, 0, iovec_cnt);
+	spdk_trace_record(TRACE_ISCSI_FLUSH_WRITEBUF_START, conn->id, total_length, 0, iovec_cnt);
 
 	bytes = spdk_sock_writev(conn->sock, iov, iovec_cnt);
 	if (bytes == -1) {
@@ -1091,7 +1159,7 @@ spdk_iscsi_conn_flush_pdus_internal(struct spdk_iscsi_conn *conn)
 		}
 	}
 
-	spdk_trace_record(TRACE_FLUSH_WRITEBUF_DONE, conn->id, bytes, 0, 0);
+	spdk_trace_record(TRACE_ISCSI_FLUSH_WRITEBUF_DONE, conn->id, bytes, 0, 0);
 
 	pdu = TAILQ_FIRST(&conn->write_pdu_list);
 
@@ -1229,6 +1297,7 @@ spdk_iscsi_conn_handle_incoming_pdus(struct spdk_iscsi_conn *conn)
 			return rc;
 		}
 
+		spdk_trace_record(TRACE_ISCSI_TASK_EXECUTED, 0, 0, (uintptr_t)pdu, 0);
 		if (conn->is_stopped) {
 			break;
 		}
@@ -1304,6 +1373,7 @@ spdk_iscsi_conn_migration(struct spdk_iscsi_conn *conn)
 	}
 
 	spdk_iscsi_poll_group_remove_conn_sock(conn);
+	spdk_poller_unregister(&conn->flush_poller);
 	spdk_iscsi_conn_stop(conn);
 
 	__sync_fetch_and_add(&g_num_connections[lcore], 1);
@@ -1380,20 +1450,21 @@ SPDK_TRACE_REGISTER_FN(iscsi_conn_trace)
 {
 	spdk_trace_register_owner(OWNER_ISCSI_CONN, 'c');
 	spdk_trace_register_object(OBJECT_ISCSI_PDU, 'p');
-	spdk_trace_register_description("READ_FROM_SOCKET_DONE", "", TRACE_READ_FROM_SOCKET_DONE,
+	spdk_trace_register_description("ISCSI_READ_FROM_SOCKET_DONE", "",
+					TRACE_ISCSI_READ_FROM_SOCKET_DONE,
 					OWNER_ISCSI_CONN, OBJECT_NONE, 0, 0, "");
-	spdk_trace_register_description("FLUSH_WRITEBUF_START", "", TRACE_FLUSH_WRITEBUF_START,
+	spdk_trace_register_description("ISCSI_FLUSH_WRITEBUF_START", "", TRACE_ISCSI_FLUSH_WRITEBUF_START,
 					OWNER_ISCSI_CONN, OBJECT_NONE, 0, 0, "iovec: ");
-	spdk_trace_register_description("FLUSH_WRITEBUF_DONE", "", TRACE_FLUSH_WRITEBUF_DONE,
+	spdk_trace_register_description("ISCSI_FLUSH_WRITEBUF_DONE", "", TRACE_ISCSI_FLUSH_WRITEBUF_DONE,
 					OWNER_ISCSI_CONN, OBJECT_NONE, 0, 0, "");
-	spdk_trace_register_description("READ_PDU", "", TRACE_READ_PDU,
+	spdk_trace_register_description("ISCSI_READ_PDU", "", TRACE_ISCSI_READ_PDU,
 					OWNER_ISCSI_CONN, OBJECT_ISCSI_PDU, 1, 0, "opc:   ");
 	spdk_trace_register_description("ISCSI_TASK_DONE", "", TRACE_ISCSI_TASK_DONE,
 					OWNER_ISCSI_CONN, OBJECT_SCSI_TASK, 0, 0, "");
 	spdk_trace_register_description("ISCSI_TASK_QUEUE", "", TRACE_ISCSI_TASK_QUEUE,
 					OWNER_ISCSI_CONN, OBJECT_SCSI_TASK, 1, 1, "pdu:   ");
-	spdk_trace_register_description("ISCSI_CONN_ACTIVE", "", TRACE_ISCSI_CONN_ACTIVE,
-					OWNER_ISCSI_CONN, OBJECT_NONE, 0, 0, "");
-	spdk_trace_register_description("ISCSI_CONN_IDLE", "", TRACE_ISCSI_CONN_IDLE,
-					OWNER_ISCSI_CONN, OBJECT_NONE, 0, 0, "");
+	spdk_trace_register_description("ISCSI_TASK_EXECUTED", "", TRACE_ISCSI_TASK_EXECUTED,
+					OWNER_ISCSI_CONN, OBJECT_ISCSI_PDU, 0, 0, "");
+	spdk_trace_register_description("ISCSI_PDU_COMPLETED", "", TRACE_ISCSI_PDU_COMPLETED,
+					OWNER_ISCSI_CONN, OBJECT_ISCSI_PDU, 0, 0, "");
 }

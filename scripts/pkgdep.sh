@@ -1,4 +1,4 @@
-#! /usr/bin/env bash
+#!/usr/bin/env bash
 # Please run this script as root.
 
 set -e
@@ -89,11 +89,10 @@ if [ $nasm_ver -lt "21202" ]; then
 else
 	ipsec="$(find /usr -name intel-ipsec-mb.h 2>/dev/null)"
 	if [ "$ipsec" == "" ]; then
-		if [ -d "$rootdir/intel-ipsec-mb" ]; then
-			cd $rootdir/intel-ipsec-mb
-			make
-			make install
-			cd -
+		ipsec_submodule_cloned="$(find $rootdir/intel-ipsec-mb -name intel-ipsec-mb.h 2>/dev/null)"
+		if [ "$ipsec_submodule_cloned" != "" ]; then
+			su - $SUDO_USER -c "make -C $rootdir/intel-ipsec-mb"
+			make -C $rootdir/intel-ipsec-mb install
 		else
 			echo "The intel-ipsec-mb submodule has not been cloned and will not be installed."
 			echo "To enable crypto, run 'git submodule update --init' and then run this script again."

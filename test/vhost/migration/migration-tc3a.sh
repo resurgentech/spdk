@@ -105,12 +105,13 @@ function host1_start_nvmf()
 	nvmf_tgt_pid=$!
 	echo $nvmf_tgt_pid > $nvmf_dir/nvmf_tgt.pid
 	waitforlisten "$nvmf_tgt_pid" "$nvmf_dir/nvmf_rpc.sock"
-	$rpc_nvmf set_nvmf_target_options -u 8192 -p 4
 	$rpc_nvmf start_subsystem_init
+	$rpc_nvmf nvmf_create_transport -t RDMA -u 8192 -p 4
 	$SPDK_BUILD_DIR/scripts/gen_nvme.sh --json | $rpc_nvmf load_subsystem_config
 
-	$rpc_nvmf construct_nvmf_subsystem nqn.2018-02.io.spdk:cnode1 \
-		"trtype:RDMA traddr:$RDMA_TARGET_IP trsvcid:4420" "" -a -s SPDK01 -n Nvme0n1
+	$rpc_nvmf nvmf_subsystem_create nqn.2018-02.io.spdk:cnode1 -a -s SPDK01
+	$rpc_nvmf nvmf_subsystem_add_ns nqn.2018-02.io.spdk:cnode1 Nvme0n1
+	$rpc_nvmf nvmf_subsystem_add_listener nqn.2018-02.io.spdk:cnode1 -t rdma -a $RDMA_TARGET_IP -s 4420
 }
 
 function host1_start_vhost()

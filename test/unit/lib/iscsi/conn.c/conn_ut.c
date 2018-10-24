@@ -87,7 +87,8 @@ spdk_event_call(struct spdk_event *event)
 }
 
 int
-spdk_sock_getaddr(struct spdk_sock *sock, char *saddr, int slen, char *caddr, int clen)
+spdk_sock_getaddr(struct spdk_sock *sock, char *saddr, int slen, uint16_t *sport,
+		  char *caddr, int clen, uint16_t *cport)
 {
 	return 0;
 }
@@ -151,6 +152,12 @@ struct spdk_scsi_lun *
 spdk_scsi_dev_get_lun(struct spdk_scsi_dev *dev, int lun_id)
 {
 	return NULL;
+}
+
+bool
+spdk_scsi_dev_has_pending_tasks(const struct spdk_scsi_dev *dev)
+{
+	return true;
 }
 
 int

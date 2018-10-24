@@ -79,7 +79,6 @@ static uint32_t g_tgt_core;
 
 static struct nvmf_tgt_poll_group *g_poll_groups = NULL;
 static size_t g_num_poll_groups = 0;
-static size_t g_active_poll_groups = 0;
 
 static struct spdk_poller *g_acceptor_poller = NULL;
 
@@ -138,6 +137,36 @@ spdk_nvmf_get_core_rr(void)
 	return core;
 }
 
+static void
+nvmf_tgt_remove_host_trid(struct spdk_nvmf_qpair *qpair)
+{
+	struct spdk_nvme_transport_id trid_to_remove;
+	struct nvmf_tgt_host_trid *trid = NULL, *tmp_trid = NULL;
+
+	if (g_spdk_nvmf_tgt_conf->conn_sched != CONNECT_SCHED_HOST_IP) {
+		return;
+	}
+
+	if (spdk_nvmf_qpair_get_peer_trid(qpair, &trid_to_remove) != 0) {
+		return;
+	}
+
+	TAILQ_FOREACH_SAFE(trid, &g_nvmf_tgt_host_trids, link, tmp_trid) {
+		if (trid && !strncmp(trid->host_trid.traddr,
+				     trid_to_remove.traddr, SPDK_NVMF_TRADDR_MAX_LEN + 1)) {
+			trid->ref--;
+			if (trid->ref == 0) {
+				TAILQ_REMOVE(&g_nvmf_tgt_host_trids, trid, link);
+				free(trid);
+			}
+
+			break;
+		}
+	}
+
+	return;
+}
+
 static uint32_t
 nvmf_tgt_get_qpair_core(struct spdk_nvmf_qpair *qpair)
 {
@@ -191,16 +220,28 @@ new_qpair(struct spdk_nvmf_qpair *qpair)
 	struct spdk_event *event;
 	struct nvmf_tgt_poll_group *pg;
 	uint32_t core;
+	uint32_t attempts;
 
 	if (g_tgt_state != NVMF_TGT_RUNNING) {
 		spdk_nvmf_qpair_disconnect(qpair, NULL, NULL);
 		return;
 	}
 
-	core = nvmf_tgt_get_qpair_core(qpair);
+	for (attempts = 0; attempts < g_num_poll_groups; attempts++) {
+		core = nvmf_tgt_get_qpair_core(qpair);
+		pg = &g_poll_groups[core];
+		if (pg->group != NULL) {
+			break;
+		} else {
+			nvmf_tgt_remove_host_trid(qpair);
+		}
+	}
 
-	pg = &g_poll_groups[core];
-	assert(pg != NULL);
+	if (attempts == g_num_poll_groups) {
+		SPDK_ERRLOG("No poll groups exist.\n");
+		spdk_nvmf_qpair_disconnect(qpair, NULL, NULL);
+		return;
+	}
 
 	event = spdk_event_allocate(core, nvmf_tgt_poll_group_add, qpair, pg);
 	spdk_event_call(event);
@@ -229,13 +270,11 @@ nvmf_tgt_destroy_poll_group(void *ctx)
 	struct nvmf_tgt_poll_group *pg;
 
 	pg = &g_poll_groups[spdk_env_get_current_core()];
-	assert(pg != NULL);
 
-	spdk_nvmf_poll_group_destroy(pg->group);
-	pg->group = NULL;
-
-	assert(g_active_poll_groups > 0);
-	g_active_poll_groups--;
+	if (pg->group) {
+		spdk_nvmf_poll_group_destroy(pg->group);
+		pg->group = NULL;
+	}
 }
 
 static void
@@ -251,12 +290,8 @@ nvmf_tgt_create_poll_group(void *ctx)
 	struct nvmf_tgt_poll_group *pg;
 
 	pg = &g_poll_groups[spdk_env_get_current_core()];
-	assert(pg != NULL);
 
 	pg->group = spdk_nvmf_poll_group_create(g_spdk_nvmf_tgt);
-	assert(pg->group != NULL);
-
-	g_active_poll_groups++;
 }
 
 static void
@@ -302,6 +337,7 @@ nvmf_tgt_destroy_done(void *ctx, int status)
 	}
 
 	free(g_spdk_nvmf_tgt_conf);
+	g_spdk_nvmf_tgt_conf = NULL;
 	nvmf_tgt_advance_state();
 }
 

@@ -4,6 +4,10 @@
 
 ### nvme
 
+spdk_nvme_ctrlr_cmd_security_send() and spdk_nvme_ctrlr_cmd_security_receive()
+were added to support sending or receiving security protocol data to or from
+nvme controller.
+
 spdk_nvme_ns_get_extended_sector_size() was added.  This function includes
 the metadata size per sector (if any).  spdk_nvme_ns_get_sector_size() still
 returns only the data size per sector, not including metadata.
@@ -28,13 +32,26 @@ Intel QAT hardware accelerator also currently implemented with support for CBC c
 may include additional ciphers as well as consideration for authentication. NOTE: this module is
 currently marked as experimental.  Do not use in production.
 
+The RAID virtual bdev module is now always enabled by default.  The configure --with-raid and
+--without-raid options are now ignored and deprecated and will be removed in the next release.
+
+Enforcement of bandwidth limits for quality of service (QoS) has been added to the bdev layer.
+See the new [set_bdev_qos_limit](http://www.spdk.io/doc/jsonrpc.html#rpc_set_bdev_qos_limit)
+documentation for more details. The previous set_bdev_qos_limit_iops RPC method introduced at
+18.04 release has been deprecated. The new set_bdev_qos_limit RPC method can support both
+bandwidth and IOPS limits.
+
 ### Environment Abstraction Layer and Event Framework
 
 The size parameter of spdk_mem_map_translate is now a pointer. This allows the
 function to report back the actual size of the translation relative to the original
 request made by the user.
 
-### iscsi
+A new structure spdk_mem_map_ops has been introduced to hold memory map related
+callbacks. This structure is now passed as the second argument of spdk_mem_map_alloc
+in lieu of the notify callback.
+
+### iscsi target
 
 Parameter names of `set_iscsi_options` and `get_iscsi_global_params` RPC
 method for CHAP authentication in discovery sessions have been changed to
@@ -51,6 +68,12 @@ default location for this file (`/usr/local/etc/spdk/auth.conf`) if none was
 specified. This default has been removed. Users must now explicitly specify
 the location of this file to load CHAP shared secrets from a file, or use
 the related iSCSI RPC methods to add them at runtime.
+
+### iscsi initiator
+
+The SPDK iSCSI initiator is no longer considered experimental and becomes
+a first-class citizen among bdev modules. The basic usage has been briefly
+described in the bdev user guide: [iSCSI bdev](https://spdk.io/doc/bdev.html#bdev_config_iscsi)
 
 ### Miscellaneous
 
@@ -85,6 +108,26 @@ scripts/config_converter.py. Example how this script can be used:
 ~~~{.sh}
 cat old_format.ini | scripts/config_converter.py > new_json_format.json
 ~~~
+
+### Sock
+
+Two additional parameters were added to spdk_sock_get_addr() for the server
+port and client port. These parameters are named "sport" and "cport"
+respectively.
+
+### Virtio
+
+The following RPC commands have been deprecated:
+ - construct_virtio_user_scsi_bdev
+ - construct_virtio_pci_scsi_bdev
+ - construct_virtio_user_blk_bdev
+ - construct_virtio_pci_blk_bdev
+ - remove_virtio_scsi_bdev
+
+The `construct_virtio_*` ones were replaced with a single `construct_virtio_dev`
+command that can create any type of Virtio bdev(s). `remove_virtio_scsi_bdev`
+was replaced with `remove_virtio_bdev` that can delete both Virtio Block and SCSI
+devices.
 
 ## v18.07:
 

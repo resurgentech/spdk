@@ -48,6 +48,10 @@ Example response
 ~~~
 {
   "num_blocks": 32768,
+  "assigned_rate_limits": {
+    "rw_ios_per_sec": 10000,
+    "rw_mbytes_per_sec": 20
+  },
   "supported_io_types": {
     "reset": true,
     "nvme_admin": false,
@@ -65,6 +69,17 @@ Example response
   "name": "Malloc0"
 }
 ~~~
+
+## set_bdev_qos_limit {#set_bdev_qos_limit}
+
+Users can use the `set_bdev_qos_limit` RPC command to enable, adjust, and disable
+rate limits on an existing bdev.  Two types of rate limits are supported:
+IOPS and bandwidth.  The rate limits can be enabled, adjusted, and disabled at any
+time for the specified bdev.  The bdev name is a required parameter for this
+RPC command and at least one of `rw_ios_per_sec` and `rw_mbytes_per_sec` must be
+specified.  When both rate limits are enabled, the first met limit will
+take effect.  The value 0 may be specified to disable the corresponding rate
+limit. Users can run this command with `-h` or `--help` for more information.
 
 ## delete_bdev {#bdev_ug_delete_bdev}
 
@@ -135,6 +150,7 @@ It will automatically detect @ref bdev_ug_gpt on any attached bdev and will crea
 possibly multiple virtual bdevs.
 
 ## SPDK GPT partition table {#bdev_ug_gpt}
+
 The SPDK partition type GUID is `7c5222bd-8f5d-4087-9c00-bf9843c7b58c`. Existing SPDK bdevs
 can be exposed as Linux block devices via NBD and then ca be partitioned with
 standard partitioning tools. After partitioning, the bdevs will need to be deleted and
@@ -182,6 +198,19 @@ rpc.py stop_nbd_disk /dev/nbd0
 # the first partition will be automatically exposed as
 # Nvme0n1p1 in SPDK applications.
 ~~~
+
+# iSCSI bdev {#bdev_config_iscsi}
+
+The SPDK iSCSI bdev driver depends on libiscsi and hence is not enabled by default.
+In order to use it, build SPDK with an extra `--with-iscsi-initiator` configure option.
+
+The following command creates an `iSCSI0` bdev from a single LUN exposed at given iSCSI URL
+with `iqn.2016-06.io.spdk:init` as the reported initiator IQN.
+
+`rpc.py construct_iscsi_bdev -b iSCSI0 -i iqn.2016-06.io.spdk:init --url iscsi://127.0.0.1/iqn.2016-06.io.spdk:disk1/0`
+
+The URL is in the following format:
+`iscsi://[<username>[%<password>]@]<host>[:<port>]/<target-iqn>/<lun>`
 
 # Linux AIO bdev {#bdev_config_aio}
 
@@ -359,15 +388,22 @@ To remove a block device representation use the delete_pmem_bdev command.
 
 # Virtio Block {#bdev_config_virtio_blk}
 
-The Virtio-Block driver can expose an SPDK bdev from a Virtio-Block device.
+The Virtio-Block driver allows creating SPDK bdevs from Virtio-Block devices.
 
-Virtio-Block bdevs are constructed the same way as Virtio-SCSI ones.
+The following command creates a Virtio-Block device named `VirtioBlk0` from a vhost-user
+socket `/tmp/vhost.0` exposed directly by SPDK @ref vhost. Optional `vq-count` and
+`vq-size` params specify number of request queues and queue depth to be used.
 
-`rpc.py construct_virtio_user_blk_bdev /tmp/virtio.0 VirtioBlk0 --vq-count 2 --vq-size 512`
+`rpc.py construct_virtio_dev --dev-type blk --trtype user --traddr /tmp/vhost.0 --vq-count 2 --vq-size 512 VirtioBlk0`
 
-`rpc.py construct_virtio_pci_blk_bdev 0000:01:00.0 VirtioBlk1`
+The driver can be also used inside QEMU-based VMs. The following command creates a Virtio
+Block device named `VirtioBlk0` from a Virtio PCI device at address `0000:00:01.0`.
+The entire configuration will be read automatically from PCI Configuration Space. It will
+reflect all parameters passed to QEMU's vhost-user-scsi-pci device.
 
-Virtio-BLK devices can be removed with the following command
+`rpc.py construct_virtio_dev --dev-type blk --trtype pci --traddr 0000:01:00.0 VirtioBlk1`
+
+Virtio-Block devices can be removed with the following command
 
 `rpc.py remove_virtio_bdev VirtioBlk0`
 
@@ -375,18 +411,11 @@ Virtio-BLK devices can be removed with the following command
 
 The Virtio-SCSI driver allows creating SPDK block devices from Virtio-SCSI LUNs.
 
-The following command creates a Virtio-SCSI device named `VirtioScsi0` from a vhost-user
-socket `/tmp/vhost.0` exposed directly by SPDK @ref vhost. Optional `vq-count` and
-`vq-size` params specify number of request queues and queue depth to be used.
+Virtio-SCSI bdevs are constructed the same way as Virtio-Block ones.
 
-`rpc.py construct_virtio_user_scsi_bdev /tmp/vhost.0 VirtioScsi0 --vq-count 2 --vq-size 512`
+`rpc.py construct_virtio_dev --dev-type scsi --trtype user --traddr /tmp/vhost.0 --vq-count 2 --vq-size 512 VirtioScsi0`
 
-The driver can be also used inside QEMU-based VMs. The following command creates a Virtio
-SCSI device named `VirtioScsi0` from a Virtio PCI device at address `0000:00:01.0`.
-The entire configuration will be read automatically from PCI Configuration Space. It will
-reflect all parameters passed to QEMU's vhost-user-scsi-pci device.
-
-`rpc.py construct_virtio_pci_scsi_bdev 0000:00:01.0 VirtioScsi0`
+`rpc.py construct_virtio_dev --dev-type scsi --trtype pci --traddr 0000:01:00.0 VirtioScsi0`
 
 Each Virtio-SCSI device may export up to 64 block devices named VirtioScsi0t0 ~ VirtioScsi0t63,
 one LUN (LUN0) per SCSI device. The above 2 commands will output names of all exposed bdevs.

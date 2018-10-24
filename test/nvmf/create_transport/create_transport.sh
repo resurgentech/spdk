@@ -31,13 +31,12 @@ fi
 timing_enter cr_trprt
 timing_enter start_nvmf_tgt
 # Start up the NVMf target in another process
-$NVMF_APP -m 0xF --wait-for-rpc &
+$NVMF_APP -m 0xF &
 nvmfpid=$!
 
 trap "killprocess $nvmfpid; nvmftestfini $1; exit 1" SIGINT SIGTERM EXIT
 
 waitforlisten $nvmfpid
-$rpc_py start_subsystem_init
 # Use nvmf_create_transport call to create transport
 $rpc_py nvmf_create_transport -t RDMA -u 8192 -p 4
 timing_exit start_nvmf_tgt
@@ -47,10 +46,11 @@ null_bdevs+="$($rpc_py construct_null_bdev Null1 $NULL_BDEV_SIZE $NULL_BLOCK_SIZ
 
 modprobe -v nvme-rdma
 
-$rpc_py construct_nvmf_subsystem nqn.2016-06.io.spdk:cnode1 "trtype:RDMA traddr:$NVMF_FIRST_TARGET_IP trsvcid:4420" "" -a -s SPDK00000000000001
+$rpc_py nvmf_subsystem_create nqn.2016-06.io.spdk:cnode1 -a -s SPDK00000000000001
 for null_bdev in $null_bdevs; do
 	$rpc_py nvmf_subsystem_add_ns nqn.2016-06.io.spdk:cnode1 $null_bdev
 done
+$rpc_py nvmf_subsystem_add_listener nqn.2016-06.io.spdk:cnode1 -t rdma -a $NVMF_FIRST_TARGET_IP -s 4420
 
 nvme discover -t rdma -a $NVMF_FIRST_TARGET_IP -s $NVMF_PORT
 

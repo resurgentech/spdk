@@ -32,8 +32,13 @@
 #  OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
--include $(SPDK_ROOT_DIR)/CONFIG.local
-include $(SPDK_ROOT_DIR)/CONFIG
+ifneq ($(MAKECMDGOALS),clean)
+ifeq ($(wildcard $(SPDK_ROOT_DIR)/mk/config.mk),)
+$(error mk/config.mk: file not found. Please run configure before 'make $(filter-out clean,$(MAKECMDGOALS))')
+endif
+endif
+
+include $(SPDK_ROOT_DIR)/mk/config.mk
 
 -include $(SPDK_ROOT_DIR)/mk/cc.mk
 
@@ -76,8 +81,6 @@ endif
 ifeq ($(TARGET_MACHINE),x86_64)
 COMMON_CFLAGS += -march=native
 endif
-
-COMMON_CFLAGS += -include $(SPDK_ROOT_DIR)/config.h
 
 ifeq ($(CONFIG_WERROR), y)
 COMMON_CFLAGS += -Werror
@@ -189,9 +192,8 @@ CXXFLAGS += $(COMMON_CFLAGS) -std=c++0x
 SYS_LIBS += -lrt
 SYS_LIBS += -luuid
 SYS_LIBS += -lcrypto
-ifneq ($(CONFIG_LOG_BACKTRACE),)
+ifeq ($(CONFIG_LOG_BACKTRACE),y)
 SYS_LIBS += -lunwind
-COMMON_CFLAGS += -DSPDK_LOG_BACKTRACE_LVL=SPDK_LOG_$(CONFIG_LOG_BACKTRACE)
 endif
 
 MAKEFLAGS += --no-print-directory
@@ -265,20 +267,14 @@ INSTALL_REL_SYMLINK := ln -sf -r
 endif
 
 define spdk_install_lib_symlink
-	$(INSTALL_REL_SYMLINK) $(DESTDIR)$(libdir)/$(1).$(SO_SUFFIX_ALL) $(DESTDIR)$(libdir)/$(1)
+	$(INSTALL_REL_SYMLINK) $(DESTDIR)$(libdir)/$(1) $(DESTDIR)$(libdir)/$(2)
 endef
 
-# Install shared library(s)
-define spdk_install_shared_libs
-	$(Q)echo "  INSTALL $(DESTDIR)$(libdir)/$(notdir $(1))"
-	install -d -m 755 $(DESTDIR)$(libdir)
-	@for l in $(1); do \
-		bln=$${l##*/}; \
-		rn=$$l.$(SO_SUFFIX_ALL); \
-		install -m 755 $$rn $(DESTDIR)$(libdir)/; \
-		$(call spdk_install_lib_symlink,$$bln); \
-	done
-endef
+INSTALL_SHARED_LIB=\
+	$(Q)echo "  INSTALL $(DESTDIR)$(libdir)/$(notdir $(SHARED_LINKED_LIB))"; \
+	install -d -m 755 "$(DESTDIR)$(libdir)"; \
+	install -m 755 "$(SHARED_REALNAME_LIB)" "$(DESTDIR)$(libdir)/"; \
+	$(call spdk_install_lib_symlink,$(notdir $(SHARED_REALNAME_LIB)),$(notdir $(SHARED_LINKED_LIB)));
 
 # Install an app binary
 INSTALL_APP=\
@@ -300,6 +296,10 @@ INSTALL_HEADER=\
 
 %.d: ;
 
-define spdk_lib_list_to_files
+define spdk_lib_list_to_static_libs
 $(1:%=$(SPDK_ROOT_DIR)/build/lib/libspdk_%.a)
+endef
+
+define spdk_lib_list_to_shared_libs
+$(1:%=$(SPDK_ROOT_DIR)/build/lib/libspdk_%.so)
 endef

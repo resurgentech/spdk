@@ -4,6 +4,7 @@ from rpc.client import print_dict, JSONRPCException
 
 import argparse
 import rpc
+import sys
 
 try:
     from shlex import quote
@@ -59,6 +60,7 @@ if __name__ == "__main__":
     @call_cmd
     def save_config(args):
         rpc.save_config(args.client,
+                        sys.stdout,
                         indent=args.indent)
 
     p = subparsers.add_parser('save_config', help="""Write current (live) configuration of SPDK subsystems and targets to stdout.
@@ -69,7 +71,7 @@ if __name__ == "__main__":
 
     @call_cmd
     def load_config(args):
-        rpc.load_config(args.client)
+        rpc.load_config(args.client, sys.stdin)
 
     p = subparsers.add_parser('load_config', help="""Configure SPDK subsystems and targets using JSON RPC read from stdin.""")
     p.set_defaults(func=load_config)
@@ -77,6 +79,7 @@ if __name__ == "__main__":
     @call_cmd
     def save_subsystem_config(args):
         rpc.save_subsystem_config(args.client,
+                                  sys.stdout,
                                   indent=args.indent,
                                   name=args.name)
 
@@ -89,7 +92,8 @@ if __name__ == "__main__":
 
     @call_cmd
     def load_subsystem_config(args):
-        rpc.load_subsystem_config(args.client)
+        rpc.load_subsystem_config(args.client,
+                                  sys.stdin)
 
     p = subparsers.add_parser('load_subsystem_config', help="""Configure SPDK subsystem using JSON RPC read from stdin.""")
     p.set_defaults(func=load_subsystem_config)
@@ -135,13 +139,13 @@ if __name__ == "__main__":
     def construct_crypto_bdev(args):
         print(rpc.bdev.construct_crypto_bdev(args.client,
                                              base_bdev_name=args.base_bdev_name,
-                                             crypto_bdev_name=args.crypto_bdev_name,
+                                             name=args.name,
                                              crypto_pmd=args.crypto_pmd,
                                              key=args.key))
     p = subparsers.add_parser('construct_crypto_bdev',
                               help='Add a crypto vbdev')
     p.add_argument('-b', '--base_bdev_name', help="Name of the base bdev")
-    p.add_argument('-c', '--crypto_bdev_name', help="Name of the crypto vbdev")
+    p.add_argument('-c', '--name', help="Name of the crypto vbdev")
     p.add_argument('-d', '--crypto_pmd', help="Name of the crypto device driver")
     p.add_argument('-k', '--key', help="Key")
     p.set_defaults(func=construct_crypto_bdev)
@@ -449,16 +453,21 @@ if __name__ == "__main__":
     p.set_defaults(func=set_bdev_qd_sampling_period)
 
     @call_cmd
-    def set_bdev_qos_limit_iops(args):
-        rpc.bdev.set_bdev_qos_limit_iops(args.client,
-                                         name=args.name,
-                                         ios_per_sec=args.ios_per_sec)
+    def set_bdev_qos_limit(args):
+        rpc.bdev.set_bdev_qos_limit(args.client,
+                                    name=args.name,
+                                    rw_ios_per_sec=args.rw_ios_per_sec,
+                                    rw_mbytes_per_sec=args.rw_mbytes_per_sec)
 
-    p = subparsers.add_parser('set_bdev_qos_limit_iops', help='Set QoS IOPS limit on a blockdev')
+    p = subparsers.add_parser('set_bdev_qos_limit', help='Set QoS rate limit on a blockdev')
     p.add_argument('name', help='Blockdev name to set QoS. Example: Malloc0')
-    p.add_argument('ios_per_sec',
-                   help='IOs per second limit (>=10000, example: 20000). 0 means unlimited.', type=int)
-    p.set_defaults(func=set_bdev_qos_limit_iops)
+    p.add_argument('--rw_ios_per_sec',
+                   help='R/W IOs per second limit (>=10000, example: 20000). 0 means unlimited.',
+                   type=int, required=False)
+    p.add_argument('--rw_mbytes_per_sec',
+                   help="R/W megabytes per second limit (>=10, example: 100). 0 means unlimited.",
+                   type=int, required=False)
+    p.set_defaults(func=set_bdev_qos_limit)
 
     @call_cmd
     def bdev_inject_error(args):
@@ -1354,7 +1363,7 @@ Format: 'user:u1 secret:s1 muser:mu1 msecret:ms1,user:u2 secret:s2 muser:mu2 mse
     p.add_argument("-a", "--allow-any-host", action='store_true', help="Allow any host to connect (don't enforce host NQN whitelist)")
     p.add_argument("-s", "--serial-number", help="""
     Format:  'sn' etc
-    Example: 'SPDK00000000000001'""", default='0000:00:01.0')
+    Example: 'SPDK00000000000001'""", default='00000000000000000000')
     p.add_argument("-n", "--namespaces", help="""Whitespace-separated list of namespaces
     Format:  'bdev_name1[:nsid1] bdev_name2[:nsid2] bdev_name3[:nsid3]' etc
     Example: '1:Malloc0 2:Malloc1 3:Malloc2'
@@ -1375,7 +1384,7 @@ Format: 'user:u1 secret:s1 muser:mu1 msecret:ms1,user:u2 secret:s2 muser:mu2 mse
     p.add_argument('nqn', help='Subsystem NQN (ASCII)')
     p.add_argument("-s", "--serial-number", help="""
     Format:  'sn' etc
-    Example: 'SPDK00000000000001'""", default='0000:00:01.0')
+    Example: 'SPDK00000000000001'""", default='00000000000000000000')
     p.add_argument("-a", "--allow-any-host", action='store_true', help="Allow any host to connect (don't enforce host NQN whitelist)")
     p.add_argument("-m", "--max-namespaces", help="Maximum number of namespaces allowed",
                    type=int, default=0)
@@ -1632,9 +1641,10 @@ Format: 'user:u1 secret:s1 muser:mu1 msecret:ms1,user:u2 secret:s2 muser:mu2 mse
 
     @call_cmd
     def get_vhost_controllers(args):
-        print_dict(rpc.vhost.get_vhost_controllers(args.client))
+        print_dict(rpc.vhost.get_vhost_controllers(args.client, args.name))
 
-    p = subparsers.add_parser('get_vhost_controllers', help='List vhost controllers')
+    p = subparsers.add_parser('get_vhost_controllers', help='List all or specific vhost controller(s)')
+    p.add_argument('-n', '--name', help="Name of vhost controller", required=False)
     p.set_defaults(func=get_vhost_controllers)
 
     @call_cmd
@@ -1769,6 +1779,33 @@ Format: 'user:u1 secret:s1 muser:mu1 msecret:ms1,user:u2 secret:s2 muser:mu2 mse
     p.add_argument('-w', '--pci-whitelist', help="""Whitespace-separated list of PCI addresses in
     domain:bus:device.function format or domain.bus.device.function format""")
     p.set_defaults(func=scan_ioat_copy_engine)
+
+    # send_nvme_cmd
+    @call_cmd
+    def send_nvme_cmd(args):
+        print_dict(rpc.nvme.send_nvme_cmd(args.client,
+                                          name=args.nvme_name,
+                                          cmd_type=args.cmd_type,
+                                          data_direction=args.data_direction,
+                                          cmdbuf=args.cmdbuf,
+                                          data=args.data,
+                                          metadata=args.metadata,
+                                          data_len=args.data_length,
+                                          metadata_len=args.metadata_length,
+                                          timeout_ms=args.timeout_ms))
+
+    p = subparsers.add_parser('send_nvme_cmd', help='NVMe passthrough cmd.')
+    p.add_argument('-n', '--nvme-name', help="""Name of the operating NVMe controller""")
+    p.add_argument('-t', '--cmd-type', help="""Type of nvme cmd. Valid values are: admin, io""")
+    p.add_argument('-r', '--data-direction', help="""Direction of data transfer. Valid values are: c2h, h2c""")
+    p.add_argument('-c', '--cmdbuf', help="""NVMe command encoded by base64 urlsafe""")
+    p.add_argument('-d', '--data', help="""Data transferring to controller from host, encoded by base64 urlsafe""")
+    p.add_argument('-m', '--metadata', help="""Metadata transferring to controller from host, encoded by base64 urlsafe""")
+    p.add_argument('-D', '--data-length', help="""Data length required to transfer from controller to host""", type=int)
+    p.add_argument('-M', '--metadata-length', help="""Metadata length required to transfer from controller to host""", type=int)
+    p.add_argument('-T', '--timeout-ms',
+                   help="""Command execution timeout value, in milliseconds,  if 0, don't track timeout""", type=int, default=0)
+    p.set_defaults(func=send_nvme_cmd)
 
     args = parser.parse_args()
 

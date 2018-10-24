@@ -40,6 +40,7 @@
 #include "nvmf_internal.h"
 #include "transport.h"
 
+#include "spdk/config.h"
 #include "spdk/assert.h"
 #include "spdk/thread.h"
 #include "spdk/nvmf.h"
@@ -1009,6 +1010,29 @@ _nvmf_rdma_disconnect(void *ctx)
 	spdk_nvmf_qpair_disconnect(qpair, NULL, NULL);
 }
 
+static void
+_nvmf_rdma_disconnect_retry(void *ctx)
+{
+	struct spdk_nvmf_qpair *qpair = ctx;
+	struct spdk_nvmf_poll_group *group;
+
+	/* Read the group out of the qpair. This is normally set and accessed only from
+	 * the thread that created the group. Here, we're not on that thread necessarily.
+	 * The data member qpair->group begins it's life as NULL and then is assigned to
+	 * a pointer and never changes. So fortunately reading this and checking for
+	 * non-NULL is thread safe in the x86_64 memory model. */
+	group = qpair->group;
+
+	if (group == NULL) {
+		/* The qpair hasn't been assigned to a group yet, so we can't
+		 * process a disconnect. Send a message to ourself and try again. */
+		spdk_thread_send_msg(spdk_get_thread(), _nvmf_rdma_disconnect_retry, qpair);
+		return;
+	}
+
+	spdk_thread_send_msg(group->thread, _nvmf_rdma_disconnect, qpair);
+}
+
 static int
 nvmf_rdma_disconnect(struct rdma_cm_event *evt)
 {
@@ -1027,12 +1051,13 @@ nvmf_rdma_disconnect(struct rdma_cm_event *evt)
 	}
 
 	rqpair = SPDK_CONTAINEROF(qpair, struct spdk_nvmf_rdma_qpair, qpair);
-	spdk_trace_record(TRACE_RDMA_QP_DISCONNECT, 0, 0, (uintptr_t)rqpair->cm_id, 0);
-	spdk_nvmf_rdma_update_ibv_state(rqpair);
 
+	spdk_trace_record(TRACE_RDMA_QP_DISCONNECT, 0, 0, (uintptr_t)rqpair->cm_id, 0);
+
+	spdk_nvmf_rdma_update_ibv_state(rqpair);
 	spdk_nvmf_rdma_qpair_inc_refcnt(rqpair);
 
-	spdk_thread_send_msg(qpair->group->thread, _nvmf_rdma_disconnect, qpair);
+	_nvmf_rdma_disconnect_retry(qpair);
 
 	return 0;
 }
@@ -1608,7 +1633,7 @@ spdk_nvmf_rdma_request_process(struct spdk_nvmf_rdma_transport *rtransport,
 #define SPDK_NVMF_RDMA_DEFAULT_MAX_QPAIRS_PER_CTRLR 64
 #define SPDK_NVMF_RDMA_DEFAULT_IN_CAPSULE_DATA_SIZE 4096
 #define SPDK_NVMF_RDMA_DEFAULT_MAX_IO_SIZE 131072
-#define SPDK_NVMF_RDMA_DEFAULT_IO_UNIT_SIZE 131072
+#define SPDK_NVMF_RDMA_DEFAULT_IO_BUFFER_SIZE 131072
 
 static void
 spdk_nvmf_rdma_opts_init(struct spdk_nvmf_transport_opts *opts)
@@ -1617,7 +1642,7 @@ spdk_nvmf_rdma_opts_init(struct spdk_nvmf_transport_opts *opts)
 	opts->max_qpairs_per_ctrlr = SPDK_NVMF_RDMA_DEFAULT_MAX_QPAIRS_PER_CTRLR;
 	opts->in_capsule_data_size = SPDK_NVMF_RDMA_DEFAULT_IN_CAPSULE_DATA_SIZE;
 	opts->max_io_size =          SPDK_NVMF_RDMA_DEFAULT_MAX_IO_SIZE;
-	opts->io_unit_size =         SPDK_NVMF_RDMA_DEFAULT_IO_UNIT_SIZE;
+	opts->io_unit_size =         SPDK_NVMF_RDMA_DEFAULT_IO_BUFFER_SIZE;
 	opts->max_aq_depth =         SPDK_NVMF_RDMA_DEFAULT_AQ_DEPTH;
 }
 
@@ -1633,6 +1658,11 @@ spdk_nvmf_rdma_create(struct spdk_nvmf_transport_opts *opts)
 	uint32_t			i;
 	int				flag;
 	uint32_t			sge_count;
+
+	const struct spdk_mem_map_ops nvmf_rdma_map_ops = {
+		.notify_cb = spdk_nvmf_rdma_mem_notify,
+		.are_contiguous = NULL
+	};
 
 	rtransport = calloc(1, sizeof(*rtransport));
 	if (!rtransport) {
@@ -1766,7 +1796,7 @@ spdk_nvmf_rdma_create(struct spdk_nvmf_transport_opts *opts)
 			break;
 		}
 
-		device->map = spdk_mem_map_alloc(0, spdk_nvmf_rdma_mem_notify, device);
+		device->map = spdk_mem_map_alloc(0, &nvmf_rdma_map_ops, device);
 		if (!device->map) {
 			SPDK_ERRLOG("Unable to allocate memory map for new poll group\n");
 			ibv_dealloc_pd(device->pd);

@@ -230,6 +230,7 @@ Example response:
     "set_iscsi_options",
     "set_bdev_options",
     "set_bdev_qos_limit_iops",
+    "set_bdev_qos_limit",
     "delete_bdev",
     "get_bdevs",
     "get_bdevs_iostat",
@@ -627,16 +628,17 @@ Example response:
 }
 ~~~
 
-## set_bdev_qos_limit_iops {#rpc_set_bdev_qos_limit_iops}
+## set_bdev_qos_limit {#rpc_set_bdev_qos_limit}
 
-Set an IOPS-based quality of service rate limit on a bdev.
+Set the quality of service rate limit on a bdev.
 
 ### Parameters
 
 Name                    | Optional | Type        | Description
 ----------------------- | -------- | ----------- | -----------
 name                    | Required | string      | Block device name
-ios_per_sec             | Required | number      | Number of I/Os per second to allow. 0 means unlimited.
+rw_ios_per_sec          | Optional | number      | Number of R/W I/Os per second to allow. 0 means unlimited.
+rw_mbytes_per_sec       | Optional | number      | Number of R/W megabytes per second to allow. 0 means unlimited.
 
 ### Example
 
@@ -645,10 +647,11 @@ Example request:
 {
   "jsonrpc": "2.0",
   "id": 1,
-  "method": "set_bdev_qos_limit_iops",
+  "method": "set_bdev_qos_limit",
   "params": {
     "name": "Malloc0"
-    "ios_per_sec": 20000
+    "rw_ios_per_sec": 20000
+    "rw_mbytes_per_sec": 100
   }
 }
 ~~~
@@ -3635,15 +3638,21 @@ Example response:
 
 ## get_vhost_controllers {#rpc_get_vhost_controllers}
 
-Display information about all vhost controllers.
+Display information about all or specific vhost controller(s).
 
 ### Parameters
 
-This method has no parameters.
+The user may specify no parameters in order to list all controllers, or a controller may be
+specified by name.
+
+Name                    | Optional | Type        | Description
+----------------------- | -------- | ----------- | -----------
+name                    | Optional | string      | Vhost controller name
+
 
 ### Response {#rpc_get_vhost_controllers_response}
 
-Response is an array of objects describing each controllers. Common fields are:
+Response is an array of objects describing requested controller(s). Common fields are:
 
 Name                    | Type        | Description
 ----------------------- | ----------- | -----------
@@ -4278,5 +4287,64 @@ Example response:
   "jsonrpc": "2.0",
   "id": 1,
   "result": true
+}
+~~~
+
+## send_nvme_cmd {#rpc_send_nvme_cmd}
+
+Send NVMe command directly to NVMe controller or namespace. Parameters and responses encoded by base64 urlsafe need further processing.
+
+Notice: send_nvme_cmd requires user to guarentee the correctness of NVMe command itself, and also optional parameters. Illegal command contents or mismatching buffer size may result in unpredictable behavior.
+
+### Parameters
+
+Name                    | Optional | Type        | Description
+----------------------- | -------- | ----------- | -----------
+name                    | Required | string      | Name of the operating NVMe controller
+cmd_type                | Required | string      | Type of nvme cmd. Valid values are: admin, io
+data_direction          | Required | string      | Direction of data transfer. Valid values are: c2h, h2c
+cmdbuf                  | Required | string      | NVMe command encoded by base64 urlsafe
+data                    | Optional | string      | Data transferring to controller from host, encoded by base64 urlsafe
+metadata                | Optional | string      | Metadata transferring to controller from host, encoded by base64 urlsafe
+data_len                | Optional | number      | Data length required to transfer from controller to host
+metadata_len            | Optional | number      | Metadata length required to transfer from controller to host
+timeout_ms              | Optional | number      | Command execution timeout value, in milliseconds
+
+### Response
+
+Name                    | Type        | Description
+----------------------- | ----------- | -----------
+cpl                     | string      | NVMe completion queue entry, encoded by base64 urlsafe
+data                    | string      | Data transferred from controller to host, encoded by base64 urlsafe
+metadata                | string      | Metadata transferred from controller to host, encoded by base64 urlsafe
+
+### Example
+
+Example request:
+~~~
+{
+  "jsonrpc": "2.0",
+  "method": "send_nvme_cmd",
+  "id": 1,
+  "params": {
+    "name": "Nvme0",
+    "cmd_type": "admin"
+    "data_direction": "c2h",
+    "cmdbuf": "BgAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAsGUs9P5_AAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+    "data_len": 60,
+  }
+}
+~~~
+
+Example response:
+~~~
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result":  {
+    "cpl": "AAAAAAAAAAARAAAAWrmwABAA==",
+    "data": "sIjg6AAAAACwiODoAAAAALCI4OgAAAAAAAYAAREAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+  }
+
 }
 ~~~
