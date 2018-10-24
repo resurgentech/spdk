@@ -685,7 +685,7 @@ spdk_fio_queue(struct thread_data *td, struct io_u *io_u)
 		return -ENXIO;
 	}
 
-	block_size = spdk_nvme_ns_get_extended_sector_size(ns);
+	block_size = spdk_nvme_ns_get_sector_size(ns);
 
 	lba = io_u->offset / block_size;
 	lba_count = io_u->xfer_buflen / block_size;
@@ -693,6 +693,10 @@ spdk_fio_queue(struct thread_data *td, struct io_u *io_u)
 	// TODO: considering situations that fio will randomize and verify io_u
 	if (fio_qpair->do_nvme_pi) {
 		fio_extended_lba_setup_pi(fio_qpair, io_u);
+		block_size = spdk_nvme_ns_get_extended_sector_size(ns);
+
+		lba = io_u->offset / block_size;
+		lba_count = io_u->xfer_buflen / block_size;
 	}
 
 	switch (io_u->ddir) {
